@@ -1,10 +1,9 @@
-import re
 import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from PyPDF2 import PdfReader
-from prepare_graph import prepare_graph_for_llm
-from langchain_core.documents import Document
+from hybrid_retriever import PrepareRetrieval
 import pandas as pd
+import uuid
 
 class ChatInterface:
     def __init__(self, llm):
@@ -14,7 +13,7 @@ class ChatInterface:
         Args:
             llm: Pre-configured LangChain LLM instance (ChatGroq)
         """
-        self.prepare_graph_for_llm = prepare_graph_for_llm()
+        self.prepare_retrieval = PrepareRetrieval
         # Initialize session state for messages if not exists
         if "messages" not in st.session_state:
             st.session_state.messages = []
@@ -61,15 +60,8 @@ class ChatInterface:
                     
                     pdf_reader = PdfReader(file)
                     full_text = ""
-                    for page in pdf_reader.pages:
-                        raw_text = page.extract_text() + "\n"
-                        cleaned_text = self.prepare_graph_for_llm.clean_pdf_text(raw_text)
-                        full_text += cleaned_text + "\n"
-                        metadata = self.prepare_graph_for_llm.metadata_extractor(pdf_reader)
-                        print(metadata)
-                        docs = [Document(page_content=cleaned_text, metadata=metadata)]
-                        self.prepare_graph_for_llm.text_chunking(docs)
-
+                    doc_id = str(uuid.uuid1())
+                    documents = self.prepare_retrieval.process_pdf(pdf_reader,doc_id)
                     st.session_state.file_content = full_text[:200]
                 # Add system message about file upload
                 st.session_state.messages.append({
