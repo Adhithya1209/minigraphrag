@@ -358,7 +358,7 @@ class GraphRAGSchema:
 
     def save_networkx_to_neo4j(self, uri: str = "neo4j+s://3bbc5bbf.databases.neo4j.io",
                                 user: str = "neo4j",
-                                password: str = "HAaMkff47iK80Ql4x5xSEciTLrsNJPH5DT3VEY2GB7k",
+                                password: str = "",
                                 clear_existing: bool = False):
         """
         Save NetworkX graph directly to Neo4j with proper data serialization.

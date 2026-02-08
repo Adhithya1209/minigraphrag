@@ -11,7 +11,7 @@ dotenv.load_dotenv()
 # Example usage
 if __name__ == "__main__":
     groq_api_key = os.getenv("GROQ_API_KEY")
-
+    neo4j_password = os.getenv("NEO4J_PASSWORD")
     llm = ChatGroq(model="llama-3.1-8b-instant", api_key=groq_api_key)
 
     # Set page configuration
