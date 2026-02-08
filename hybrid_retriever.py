@@ -9,8 +9,10 @@ from graphrag_schema import GraphRAGSchema
 
 class PrepareRetrieval(GraphRAGSchema):
     def __init__(self, llm):
+        super().__init__()
         self.graph = None
         self.llm = llm
+
     def clean_pdf_text(self, text):
         # Remove excessive whitespace and newlines
         text = re.sub(r'\n+', '\n', text)  # Multiple newlines to single
