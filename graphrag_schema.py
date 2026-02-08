@@ -4,6 +4,8 @@ from datetime import datetime
 import numpy as np
 from networkx.readwrite import json_graph
 import json
+from neo4j import GraphDatabase
+
         
 class GraphRAGSchema:
     """
@@ -14,7 +16,8 @@ class GraphRAGSchema:
     def __init__(self):
         """Initialize directed graph for GraphRAG."""
         self.graph = nx.DiGraph()
-        
+        self.neo4j_driver = None
+
         # Define valid node types
         self.NODE_TYPES = {
             'DOCUMENT',
@@ -32,7 +35,7 @@ class GraphRAGSchema:
             'RELATES_TO',    # Entity <-> Entity
             'NEXT_CHUNK'     # Chunk -> Chunk (sequential)
         }
-    
+   
     # ==================== NODE OPERATIONS ====================
     
     def add_document_node(self, doc_id: str, metadata: Dict[str, Any]) -> None:
@@ -353,3 +356,144 @@ class GraphRAGSchema:
         self.graph = json_graph.node_link_graph(graph_data)
         print(f"Graph loaded from {filepath}")
 
+    def save_networkx_to_neo4j(self, uri: str = "neo4j+s://3bbc5bbf.databases.neo4j.io",
+                                user: str = "neo4j",
+                                password: str = "HAaMkff47iK80Ql4x5xSEciTLrsNJPH5DT3VEY2GB7k",
+                                clear_existing: bool = False):
+        """
+        Save NetworkX graph directly to Neo4j with proper data serialization.
+        """
+        driver = GraphDatabase.driver(uri, auth=(user, password))
+        
+        with driver.session() as session:
+            if clear_existing:
+                session.run("MATCH (n) DETACH DELETE n")
+                print("✓ Cleared existing Neo4j data")
+            
+            # Batch create nodes
+            print("Creating nodes...")
+            node_batch = []
+            
+            for node_id, data in self.graph.nodes(data=True):
+                node_props = self._prepare_neo4j_properties(data)
+                node_props['node_id'] = node_id
+                label = data.get('type', 'Node')
+                
+                node_batch.append({
+                    'id': node_id,
+                    'label': label,
+                    'props': node_props
+                })
+                
+                # Batch insert every 1000 nodes
+                if len(node_batch) >= 1000:
+                    self._batch_create_nodes(session, node_batch)
+                    node_batch = []
+            
+            # Insert remaining nodes
+            if node_batch:
+                self._batch_create_nodes(session, node_batch)
+            
+            # Batch create relationships
+            print("Creating relationships...")
+            rel_batch = []
+            
+            for source, target, data in self.graph.edges(data=True):
+                rel_props = self._prepare_neo4j_properties(data)
+                rel_type = data.get('type', 'RELATES_TO')
+                
+                rel_batch.append({
+                    'source': source,
+                    'target': target,
+                    'type': rel_type,
+                    'props': rel_props
+                })
+                
+                # Batch insert every 1000 relationships
+                if len(rel_batch) >= 1000:
+                    self._batch_create_relationships(session, rel_batch)
+                    rel_batch = []
+            
+            # Insert remaining relationships
+            if rel_batch:
+                self._batch_create_relationships(session, rel_batch)
+            
+            print(f"✓ NetworkX graph saved to Neo4j")
+            print(f"  Nodes: {self.graph.number_of_nodes()}")
+            print(f"  Edges: {self.graph.number_of_edges()}")
+        
+        driver.close()
+    
+    def _prepare_neo4j_properties(self, data: Dict) -> Dict:
+        """
+        Prepare properties for Neo4j (handle numpy arrays, dicts, etc.).
+        """
+        props = {}
+        
+        for key, value in data.items():
+            if key == 'type':  # Skip type, it's used as label
+                continue
+            elif isinstance(value, np.ndarray):
+                # Convert numpy array to list
+                props[key] = value.tolist()
+            elif isinstance(value, (dict, list)):
+                # Serialize to JSON string
+                props[key] = json.dumps(value)
+            elif isinstance(value, (str, int, float, bool)):
+                props[key] = value
+            elif value is None:
+                continue  # Skip None values
+            else:
+                props[key] = str(value)
+        
+        return props
+    
+    def _batch_create_nodes(self, session, node_batch: List[Dict]):
+        """Batch create nodes in Neo4j."""
+        cypher = """
+        UNWIND $batch as node
+        CALL apoc.create.node([node.label], node.props) YIELD node as n
+        RETURN count(n)
+        """
+        
+        # Fallback if APOC not available
+        try:
+            session.run(cypher, batch=node_batch)
+        except:
+            # Create nodes one by one without APOC
+            for node in node_batch:
+                label = node['label']
+                props = node['props']
+                session.run(
+                    f"CREATE (n:{label} $props)",
+                    props=props
+                )
+    
+    def _batch_create_relationships(self, session, rel_batch: List[Dict]):
+        """Batch create relationships in Neo4j."""
+        cypher = """
+        UNWIND $batch as rel
+        MATCH (a {node_id: rel.source})
+        MATCH (b {node_id: rel.target})
+        CALL apoc.create.relationship(a, rel.type, rel.props, b) YIELD rel as r
+        RETURN count(r)
+        """
+        
+        # Fallback if APOC not available
+        try:
+            session.run(cypher, batch=rel_batch)
+        except:
+            # Create relationships one by one without APOC
+            for rel in rel_batch:
+                rel_type = rel['type']
+                props = rel['props']
+                session.run(
+                    f"""
+                    MATCH (a {{node_id: $source}})
+                    MATCH (b {{node_id: $target}})
+                    CREATE (a)-[r:{rel_type} $props]->(b)
+                    """,
+                    source=rel['source'],
+                    target=rel['target'],
+                    props=props
+                )

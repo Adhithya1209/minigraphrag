@@ -134,10 +134,9 @@ class PrepareRetrieval(GraphRAGSchema):
             cleaned_text = self.prepare_graph_for_llm.clean_pdf_text(raw_text)
             full_text += cleaned_text + "\n"
             metadata = self.metadata_extractor(reader)
-            print(metadata)
             docs = [Document(page_content=cleaned_text, metadata=metadata)]
             chunks = self.text_chunking(docs, doc_id)
-
+        
     def chunk_embedding_generation(self, chunks):
         embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-mpnet-base-v2",  
@@ -224,3 +223,7 @@ class PrepareRetrieval(GraphRAGSchema):
             "relationships": relationships
         }
     
+    def run_graphrag_pipeline(self, reader, doc_id):
+        cleaned_text = self.process_pdf(reader, doc_id)
+        
+

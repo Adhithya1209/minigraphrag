@@ -118,4 +118,4 @@ if __name__ == "__main__":
     print(graph.get_graph_stats())
      # Save graph
     graph.save_graph("graphrag_schema.json")
-   
+    graph.save_networkx_to_neo4j()
