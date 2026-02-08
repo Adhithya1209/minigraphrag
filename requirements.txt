@@ -2,7 +2,7 @@ langchain_core==1.2.9
 langchain_groq==1.1.2
 langchain_text_splitters==1.1.0
 networkx==3.5
-pandas==3.0.0
+pandas
 PyPDF2==3.0.1
 python-dotenv==1.2.1
 streamlit==1.54.0

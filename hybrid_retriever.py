@@ -1,12 +1,16 @@
 import re
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+import json
+from graphrag_schema import GraphRAGSchema
 
-
-class prepare_graph_for_llm:
-    def __init__(self):
+class PrepareRetrieval(GraphRAGSchema):
+    def __init__(self, llm):
         self.graph = None
-
+        self.llm = llm
     def clean_pdf_text(self, text):
         # Remove excessive whitespace and newlines
         text = re.sub(r'\n+', '\n', text)  # Multiple newlines to single
@@ -27,9 +31,10 @@ class prepare_graph_for_llm:
     
         return text
 
-    def text_chunking(self, text):
+    def text_chunking(self, text, doc_id):
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         chunks = text_splitter.split_documents(text)
+        chunks = self.add_chunk_ids_hierarchical(chunks, doc_id)
         return chunks
 
     def metadata_extractor(self, reader):
@@ -111,7 +116,7 @@ class prepare_graph_for_llm:
         
         return date_string
         
-    def add_chunk_ids_hierarchical(chunks, doc_id):
+    def add_chunk_ids_hierarchical(self, chunks, doc_id):
         """Create hierarchical IDs like 'doc1_chunk_0', 'doc1_chunk_1'"""
         
         for i, chunk in enumerate(chunks):
@@ -120,3 +125,100 @@ class prepare_graph_for_llm:
             chunk.metadata['chunk_index'] = i
         
         return chunks
+    
+    def process_pdf(self, reader, doc_id):
+        for page in reader.pages:
+            raw_text = page.extract_text() + "\n"
+            cleaned_text = self.prepare_graph_for_llm.clean_pdf_text(raw_text)
+            full_text += cleaned_text + "\n"
+            metadata = self.metadata_extractor(reader)
+            print(metadata)
+            docs = [Document(page_content=cleaned_text, metadata=metadata)]
+            chunks = self.text_chunking(docs, doc_id)
+
+    def chunk_embedding_generation(self, chunks):
+        embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-mpnet-base-v2",  
+        encode_kwargs={'normalize_embeddings': True})
+        vectorstore = FAISS.from_documents(documents=chunks, embedding=embeddings)
+        return vectorstore
+
+    def rag_retrieval(self, vectorstore, query):
+        retrieved_docs = vectorstore.similarity_search(query, k=5)
+        return retrieved_docs
+    
+    def entity_extraction(self, chunk, chunk_metadata):
+        prompt = f"""
+        Extract entities and relationships from the following text.
+        
+        Instructions:
+        - Identify entities (author, organizations, concepts, locations, technologies, etc.)
+        - Extract relationships between entities
+        - Return results in JSON format
+        
+        Text:
+        {chunk}
+        
+        Return JSON with this exact structure:
+        {{
+            "entities": [
+                {{"name": "Entity Name", "type": "AUTHOR|ORGANIZATION|CONCEPT|LOCATION|TECHNOLOGY", "description": "brief description"}},
+            ],
+            "relationships": [
+                {{"source": "Entity1", "target": "Entity2", "relationship": "relationship_type", "description": "context"}},
+            ]
+        }}
+        
+        Only return valid JSON, no additional text.
+        """
+        try:
+            messages = [
+            SystemMessage(content="You are an expert at extracting structured information from text. Always return valid JSON."),
+            HumanMessage(content=f"Extract entities from this text: {prompt}")
+        ]
+            response = self.llm.invoke(messages)
+            raw_output = response.content
+            
+        except Exception as e:
+            print(f"Groq API error: {e}")
+            return {"entities": [], "relationships": []}
+        
+        try:
+            json_text = raw_output.strip()
+            if json_text.startswith("```json"):
+                json_text = json_text.split("```json")[1].split("```")[0].strip()
+            elif json_text.startswith("```"):
+                json_text = json_text.split("```")[1].split("```")[0].strip()
+            
+            extracted_data = json.loads(json_text)
+            
+        except json.JSONDecodeError as e:
+            print(f"JSON parsing error: {e}")
+            return {"entities": [], "relationships": []}
+        # Enrich with metadata
+        entities = []
+        for entity in extracted_data.get("entities", []):
+            entities.append({
+                "name": entity.get("name", "").strip(),
+                "type": entity.get("type", "CONCEPT").upper(),
+                "description": entity.get("description", ""),
+                "source_chunk_id": chunk_metadata.get("chunk_id"),
+                "source_doc_id": chunk_metadata.get("doc_id")
+            })
+        
+        relationships = []
+        for rel in extracted_data.get("relationships", []):
+            relationships.append({
+                "source": rel.get("source", "").strip(),
+                "target": rel.get("target", "").strip(),
+                "relationship": rel.get("relationship", "RELATED_TO").upper(),
+                "description": rel.get("description", ""),
+                "source_chunk_id": chunk_metadata.get("chunk_id"),
+                "source_doc_id": chunk_metadata.get("doc_id")
+            })
+        
+        return {
+            "entities": entities,
+            "relationships": relationships
+        }
+    
