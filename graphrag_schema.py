@@ -5,7 +5,7 @@ import numpy as np
 from networkx.readwrite import json_graph
 import json
 from neo4j import GraphDatabase
-
+import copy
         
 class GraphRAGSchema:
     """
@@ -337,7 +337,91 @@ class GraphRAGSchema:
             stats['relationship_types'][rel_type] = stats['relationship_types'].get(rel_type, 0) + 1
         
         return stats
-    
+
+    def build_graphrag_from_extractions(self, doc_metadata,
+    doc_id: str,
+    chunks: List[str],
+    extracted_entities: List[Dict],
+    extracted_relationships: List[Dict],
+    embeddings: Optional[List[np.ndarray]] = None
+):
+        """
+        Build complete GraphRAG from extraction results.
+        """
+        
+        # Step 1: Add document node
+        self.add_document_node(
+            doc_id=doc_id,
+            metadata=doc_metadata
+        )
+        
+        # Step 2: Add chunk nodes and CONTAINS relationships
+        for idx, chunk in enumerate(chunks):
+            
+            metadata = copy.deepcopy(chunk.metadata)
+            # Add chunk node
+            embedding = embeddings[idx] if embeddings else None
+            self.add_chunk_node(
+                chunk_id=chunk.metadata['chunk_id'],
+                text=chunk,
+                embedding=embedding,
+                metadata=metadata
+            )
+            
+            # Add CONTAINS relationship
+            self.add_contains_relationship(
+                doc_id=doc_id,
+                chunk_id=chunk.metadata['chunk_id'],
+                context=f"Chunk {idx} of {len(chunks)}"
+            )
+        chunk_ids = [chunk.metadata["chunk_id"] for chunk in chunks]
+        # Step 3: Add NEXT_CHUNK relationships
+        for i in range(len(chunk_ids) - 1):
+            self.add_next_chunk_relationship(
+                chunk_id=chunk_ids[i],
+                next_chunk_id=chunk_ids[i + 1]
+            )
+        
+        # Step 4: Add entity nodes
+        for entity in extracted_entities:
+            self.add_entity_node(
+                entity_name=entity['name'],
+                entity_type=entity['type'],
+                description=entity.get('description', ''),
+                metadata={
+                    'source_chunk_id': [entity.get('source_chunk_id')],
+                    'source_doc_id': entity.get('source_doc_id')
+                }
+            )
+        
+        # Step 5: Add MENTIONS relationships (Chunk -> Entity)
+        for entity in extracted_entities:
+            entity_id = entity['name'].strip().title()
+            chunk_id = entity.get('source_chunk_id')
+            
+            if chunk_id:
+                self.add_mentions_relationship(
+                    chunk_id=chunk_id,
+                    entity_id=entity_id,
+                    confidence=0.9,
+                    context=entity.get('description', '')
+                )
+        
+        # Step 6: Add RELATES_TO relationships (Entity <-> Entity)
+        for rel in extracted_relationships:
+            source_id = rel['source'].strip().title()
+            target_id = rel['target'].strip().title()
+            
+            self.add_relates_to_relationship(
+                entity1_id=source_id,
+                entity2_id=target_id,
+                relationship_description=rel.get('relationship', 'RELATED_TO'),
+                weight=1.0,
+                confidence=0.85,
+                context=rel.get('description', '')
+            )
+        
+
     def save_graph(self, filepath: str = "graph.json"):
         """Save graph in JSON format (supports all Python types)"""
         graph_data = json_graph.node_link_data(self.graph)
@@ -497,3 +581,4 @@ class GraphRAGSchema:
                     target=rel['target'],
                     props=props
                 )
+            

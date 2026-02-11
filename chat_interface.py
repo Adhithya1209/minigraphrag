@@ -13,7 +13,7 @@ class ChatInterface:
         Args:
             llm: Pre-configured LangChain LLM instance (ChatGroq)
         """
-        self.prepare_retrieval = PrepareRetrieval
+        self.prepare_retrieval = PrepareRetrieval(llm)
         # Initialize session state for messages if not exists
         if "messages" not in st.session_state:
             st.session_state.messages = []
@@ -61,7 +61,8 @@ class ChatInterface:
                     pdf_reader = PdfReader(file)
                     full_text = ""
                     doc_id = str(uuid.uuid1())
-                    documents = self.prepare_retrieval.process_pdf(pdf_reader,doc_id)
+                    print("test1", doc_id)
+                    documents = self.prepare_retrieval.process_pdf(reader=pdf_reader,doc_id=doc_id)
                     st.session_state.file_content = full_text[:200]
                 # Add system message about file upload
                 st.session_state.messages.append({

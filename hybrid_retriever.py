@@ -6,12 +6,13 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 import json
 from graphrag_schema import GraphRAGSchema
-
+import copy
 class PrepareRetrieval(GraphRAGSchema):
     def __init__(self, llm):
         super().__init__()
         self.graph = None
         self.llm = llm
+        self.doc_metadata = None
 
     def clean_pdf_text(self, text):
         # Remove excessive whitespace and newlines
@@ -30,13 +31,29 @@ class PrepareRetrieval(GraphRAGSchema):
         
         # Strip leading/trailing whitespace
         text = text.strip()
+        
     
         return text
 
-    def text_chunking(self, text, doc_id):
+    def text_chunking(self, text, doc_id, retriever="hybrid", save_mode="local"):
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         chunks = text_splitter.split_documents(text)
         chunks = self.add_chunk_ids_hierarchical(chunks, doc_id)
+        extracted_entities = []
+        extracted_relationships = []
+        
+        for chunk in chunks:
+            chunk_metadata = copy.deepcopy(chunk.metadata)
+            extracted = self.entity_extraction(chunk,chunk_metadata)
+            extracted_entities.append(extracted["entities"])
+            extracted_relationships.append(extracted["relationships"])
+
+        if retriever =="graphrag":
+            self.build_graphrag_from_extractions(doc_id=doc_id, chunks=chunks, extracted_entities=extracted_entities,)
+            if save_mode == "neo4j":
+                self.save_networkx_to_neo4j()
+            else:
+                self.save_graph()
         return chunks
 
     def metadata_extractor(self, reader):
@@ -60,6 +77,7 @@ class PrepareRetrieval(GraphRAGSchema):
                 metadata['date'] = parsed_meta.get('date', '')
             metadata['date'] = self.clean_pdf_date(metadata['date'])
         
+        self.doc_metadata = metadata
         return metadata
     def parse_first_page(self, text):
         """Extract title, author, date from first page text"""
@@ -129,13 +147,27 @@ class PrepareRetrieval(GraphRAGSchema):
         return chunks
     
     def process_pdf(self, reader, doc_id):
+        print("test2")
+        
+        # Initialize full_text
+        full_text = ""
+        
+        # Extract metadata once (outside loop)
+        metadata = self.metadata_extractor(reader)
+        
+        # Accumulate all text first
         for page in reader.pages:
             raw_text = page.extract_text() + "\n"
-            cleaned_text = self.prepare_graph_for_llm.clean_pdf_text(raw_text)
+            cleaned_text = self.clean_pdf_text(raw_text)
             full_text += cleaned_text + "\n"
-            metadata = self.metadata_extractor(reader)
-            docs = [Document(page_content=cleaned_text, metadata=metadata)]
-            chunks = self.text_chunking(docs, doc_id)
+        
+        # Create single document with all text
+        docs = [Document(page_content=full_text, metadata=metadata)]
+        
+        # Chunk the entire document once
+        chunks = self.text_chunking(docs, doc_id)
+        
+        return chunks
         
     def chunk_embedding_generation(self, chunks):
         embeddings = HuggingFaceEmbeddings(
@@ -223,7 +255,7 @@ class PrepareRetrieval(GraphRAGSchema):
             "relationships": relationships
         }
     
-    def run_graphrag_pipeline(self, reader, doc_id):
+    def run_chunk_pipeline(self, reader, doc_id):
         cleaned_text = self.process_pdf(reader, doc_id)
         
 
